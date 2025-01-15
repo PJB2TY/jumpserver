@@ -1,45 +1,72 @@
 # -*- coding: utf-8 -*-
 #
-import base64
-from Cryptodome.PublicKey import RSA
-from Cryptodome.Cipher import PKCS1_v1_5
-from Cryptodome import Random
-from common.utils import get_logger
+import ipaddress
+from urllib.parse import urljoin, urlparse
+
+from django.conf import settings
+from django.utils.translation import gettext_lazy as _
+
+from audits.const import DEFAULT_CITY
+from users.models import User
+from audits.models import UserLoginLog
+from common.utils import get_logger, get_object_or_none
+from common.utils import validate_ip, get_ip_city, get_request_ip
+from .notifications import DifferentCityLoginMessage
 
 logger = get_logger(__file__)
 
 
-def gen_key_pair():
-    """ 生成加密key
-    用于登录页面提交用户名/密码时，对密码进行加密（前端）/解密（后端）
-    """
-    random_generator = Random.new().read
-    rsa = RSA.generate(1024, random_generator)
-    rsa_private_key = rsa.exportKey().decode()
-    rsa_public_key = rsa.publickey().exportKey().decode()
-    return rsa_private_key, rsa_public_key
+def check_different_city_login_if_need(user, request):
+    if not settings.SECURITY_CHECK_DIFFERENT_CITY_LOGIN:
+        return
+
+    ip = get_request_ip(request) or '0.0.0.0'
+    city_white = [_('LAN'), 'LAN']
+    is_private = ipaddress.ip_address(ip).is_private
+    if is_private:
+        return
+    usernames = [user.username, f"{user.name}({user.username})"]
+    last_user_login = UserLoginLog.objects.exclude(
+        city__in=city_white
+    ).filter(username__in=usernames, status=True).first()
+    if not last_user_login:
+        return
+
+    city = get_ip_city(ip)
+    last_city = get_ip_city(last_user_login.ip)
+    if city == last_city:
+        return
+
+    DifferentCityLoginMessage(user, ip, city).publish_async()
 
 
-def rsa_encrypt(message, rsa_public_key):
-    """ 加密登录密码 """
-    key = RSA.importKey(rsa_public_key)
-    cipher = PKCS1_v1_5.new(key)
-    cipher_text = base64.b64encode(cipher.encrypt(message.encode())).decode()
-    return cipher_text
+def build_absolute_uri(request, path=None):
+    """ Build absolute redirect """
+    if path is None:
+        path = '/'
+    site_url = urlparse(settings.SITE_URL)
+    scheme = site_url.scheme or request.scheme
+    host = request.get_host()
+    url = f'{scheme}://{host}'
+    redirect_uri = urljoin(url, path)
+    return redirect_uri
 
 
-def rsa_decrypt(cipher_text, rsa_private_key=None):
-    """ 解密登录密码 """
-    if rsa_private_key is None:
-        # rsa_private_key 为 None，可以能是API请求认证，不需要解密
-        return cipher_text
+def build_absolute_uri_for_oidc(request, path=None):
+    """ Build absolute redirect uri for OIDC """
+    if path is None:
+        path = '/'
+    if settings.BASE_SITE_URL:
+        # OIDC 专用配置项
+        redirect_uri = urljoin(settings.BASE_SITE_URL, path)
+        return redirect_uri
+    return build_absolute_uri(request, path=path)
 
-    key = RSA.importKey(rsa_private_key)
-    cipher = PKCS1_v1_5.new(key)
-    cipher_decoded = base64.b64decode(cipher_text.encode())
-    # Todo: 弄明白为何要以下这么写，https://xbuba.com/questions/57035263
-    if len(cipher_decoded) == 127:
-        hex_fixed = '00' + cipher_decoded.hex()
-        cipher_decoded = base64.b16decode(hex_fixed.upper())
-    message = cipher.decrypt(cipher_decoded, b'error').decode()
-    return message
+
+def check_user_property_is_correct(username, **properties):
+    user = get_object_or_none(User, username=username)
+    for attr, value in properties.items():
+        if getattr(user, attr, None) != value:
+            user = None
+            break
+    return user

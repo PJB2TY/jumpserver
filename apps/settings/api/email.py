@@ -2,11 +2,13 @@
 #
 
 from smtplib import SMTPSenderRefused
-from rest_framework.views import Response, APIView
-from django.core.mail import send_mail, get_connection
-from django.utils.translation import ugettext_lazy as _
 
-from common.permissions import IsSuperUser
+from django.conf import settings
+from django.core.mail import send_mail
+from django.utils.translation import gettext_lazy as _
+from rest_framework.views import Response, APIView
+
+from common.tasks import get_email_connection as get_connection
 from common.utils import get_logger
 from .. import serializers
 
@@ -16,30 +18,33 @@ __all__ = ['MailTestingAPI']
 
 
 class MailTestingAPI(APIView):
-    permission_classes = (IsSuperUser,)
     serializer_class = serializers.MailTestSerializer
     success_message = _("Test mail sent to {}, please check")
+    rbac_perms = {
+        'POST': 'settings.change_email'
+    }
 
     def post(self, request):
         serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        email_host = serializer.validated_data['EMAIL_HOST']
-        email_port = serializer.validated_data['EMAIL_PORT']
-        email_host_user = serializer.validated_data["EMAIL_HOST_USER"]
-        email_host_password = serializer.validated_data['EMAIL_HOST_PASSWORD']
-        email_from = serializer.validated_data["EMAIL_FROM"]
-        email_recipient = serializer.validated_data["EMAIL_RECIPIENT"]
-        email_use_ssl = serializer.validated_data['EMAIL_USE_SSL']
-        email_use_tls = serializer.validated_data['EMAIL_USE_TLS']
+        # 测试邮件时，邮件服务器信息从配置中获取
+        email_host = settings.EMAIL_HOST
+        email_port = settings.EMAIL_PORT
+        email_host_user = settings.EMAIL_HOST_USER
+        email_host_password = settings.EMAIL_HOST_PASSWORD
+        email_from = serializer.validated_data.get('EMAIL_FROM')
+        email_use_ssl = settings.EMAIL_USE_SSL
+        email_use_tls = settings.EMAIL_USE_TLS
+        email_recipient = serializer.validated_data.get('EMAIL_RECIPIENT')
 
         # 设置 settings 的值，会导致动态配置在当前进程失效
         # for k, v in serializer.validated_data.items():
         #     if k.startswith('EMAIL'):
         #         setattr(settings, k, v)
         try:
-            subject = "Test"
-            message = "Test smtp setting"
+            subject = settings.EMAIL_SUBJECT_PREFIX or '' + "Test"
+            message = _("Test smtp setting")
             email_from = email_from or email_host_user
             email_recipient = email_recipient or email_from
             connection = get_connection(

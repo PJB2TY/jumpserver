@@ -1,53 +1,69 @@
-from django.shortcuts import get_object_or_404
+from rest_framework.generics import CreateAPIView
 from rest_framework.response import Response
-from rest_framework.generics import CreateAPIView, RetrieveDestroyAPIView
 
-from common.permissions import IsAppUser
 from common.utils import reverse, lazyproperty
-from orgs.utils import tmp_to_org, tmp_to_root_org
-from tickets.api import GenericTicketStatusRetrieveCloseAPI
-from ..models import LoginAssetACL
+from orgs.utils import tmp_to_org
 from .. import serializers
+from ..models import LoginAssetACL
 
-__all__ = ['LoginAssetCheckAPI', 'LoginAssetConfirmStatusAPI']
+__all__ = ['LoginAssetCheckAPI']
 
 
 class LoginAssetCheckAPI(CreateAPIView):
-    permission_classes = (IsAppUser,)
     serializer_class = serializers.LoginAssetCheckSerializer
+    model = LoginAssetACL
+    rbac_perms = {
+        'POST': 'tickets.add_superticket'
+    }
+
+    def get_queryset(self):
+        return LoginAssetACL.objects.all()
 
     def create(self, request, *args, **kwargs):
-        is_need_confirm, response_data = self.check_if_need_confirm()
-        return Response(data=response_data, status=200)
+        data = self.check_review()
+        return Response(data=data, status=200)
 
-    def check_if_need_confirm(self):
-        queries = {
-            'user': self.serializer.user, 'asset': self.serializer.asset,
-            'system_user': self.serializer.system_user,
-            'action': LoginAssetACL.ActionChoices.login_confirm
-        }
-        with tmp_to_org(self.serializer.org):
-            acl = LoginAssetACL.filter(**queries).valid().first()
+    @lazyproperty
+    def serializer(self):
+        serializer = self.get_serializer(data=self.request.data)
+        serializer.is_valid(raise_exception=True)
+        return serializer
 
-        if not acl:
-            is_need_confirm = False
-            response_data = {}
+    def check_review(self):
+        user = self.serializer.user
+        asset = self.serializer.asset
+
+        # 用户满足的 acls
+        queryset = LoginAssetACL.objects.all()
+        q = LoginAssetACL.users.get_filter_q(LoginAssetACL, 'users', user)
+        queryset = queryset.filter(q)
+        q = LoginAssetACL.assets.get_filter_q(LoginAssetACL, 'assets', asset)
+        queryset = queryset.filter(q)
+        account_username = self.serializer.validated_data.get('account_username')
+        queryset = queryset.filter(accounts__contains=account_username)
+
+        with tmp_to_org(self.serializer.asset.org):
+            acl = queryset.valid().first()
+
+        if acl:
+            need_review = True
+            response_data = self._get_response_data_of_need_review(acl)
         else:
-            is_need_confirm = True
-            response_data = self._get_response_data_of_need_confirm(acl)
-        response_data['need_confirm'] = is_need_confirm
-        return is_need_confirm, response_data
+            need_review = False
+            response_data = {}
+        response_data['need_review'] = need_review
+        return response_data
 
-    def _get_response_data_of_need_confirm(self, acl):
-        ticket = LoginAssetACL.create_login_asset_confirm_ticket(
+    def _get_response_data_of_need_review(self, acl) -> dict:
+        ticket = LoginAssetACL.create_login_asset_review_ticket(
             user=self.serializer.user,
             asset=self.serializer.asset,
-            system_user=self.serializer.system_user,
+            account_username=self.serializer.validated_data.get('account_username'),
             assignees=acl.reviewers.all(),
-            org_id=self.serializer.org.id
+            org_id=self.serializer.asset.org.id,
         )
-        confirm_status_url = reverse(
-            view_name='api-acls:login-asset-confirm-status',
+        review_status_url = reverse(
+            view_name='api-tickets:super-ticket-status',
             kwargs={'pk': str(ticket.id)}
         )
         ticket_detail_url = reverse(
@@ -56,21 +72,12 @@ class LoginAssetCheckAPI(CreateAPIView):
             external=True, api_to_ui=True
         )
         ticket_detail_url = '{url}?type={type}'.format(url=ticket_detail_url, type=ticket.type)
-        ticket_assignees = ticket.current_node.first().ticket_assignees.all()
+        ticket_assignees = ticket.current_step.ticket_assignees.all()
         data = {
-            'check_confirm_status': {'method': 'GET', 'url': confirm_status_url},
-            'close_confirm': {'method': 'DELETE', 'url': confirm_status_url},
+            'check_review_status': {'method': 'GET', 'url': review_status_url},
+            'close_review': {'method': 'DELETE', 'url': review_status_url},
             'ticket_detail_url': ticket_detail_url,
-            'reviewers': [str(ticket_assignee.assignee) for ticket_assignee in ticket_assignees]
+            'reviewers': [str(ticket_assignee.assignee) for ticket_assignee in ticket_assignees],
+            'ticket_id': str(ticket.id)
         }
         return data
-
-    @lazyproperty
-    def serializer(self):
-        serializer = self.get_serializer(data=self.request.data)
-        serializer.is_valid(raise_exception=True)
-        return serializer
-
-
-class LoginAssetConfirmStatusAPI(GenericTicketStatusRetrieveCloseAPI):
-    pass

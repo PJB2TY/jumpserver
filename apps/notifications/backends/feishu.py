@@ -1,6 +1,6 @@
 from django.conf import settings
 
-from common.message.backends.feishu import FeiShu as Client
+from common.sdk.im.feishu import FeiShu as Client
 from .base import BackendBase
 
 
@@ -16,6 +16,8 @@ class FeiShu(BackendBase):
 
     def send_msg(self, users, message, subject=None):
         accounts, __, __ = self.get_accounts(users)
+        if not accounts:
+            return
         return self.client.send_text(accounts, message)
 
 

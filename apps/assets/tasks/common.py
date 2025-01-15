@@ -1,18 +1,47 @@
 # -*- coding: utf-8 -*-
 #
+import uuid
 
-from celery import shared_task
+from celery import current_task
 
-from orgs.utils import tmp_to_root_org
+from common.const.choices import Trigger
+from orgs.utils import current_org
 
-__all__ = ['add_nodes_assets_to_system_users']
+
+def generate_automation_execution_data(task_name, tp, task_snapshot=None):
+    task_snapshot = task_snapshot or {}
+    from assets.models import BaseAutomation
+    try:
+        eid = current_task.request.id
+    except AttributeError:
+        eid = str(uuid.uuid4())
+
+    data = {
+        'type': tp,
+        'name': task_name,
+        'org_id': str(current_org.id)
+    }
+
+    automation_instance = BaseAutomation()
+    snapshot = automation_instance.to_attr_json()
+    snapshot.update(data)
+    snapshot.update(task_snapshot)
+    return {'id': eid, 'snapshot': snapshot}
 
 
-@shared_task
-@tmp_to_root_org()
-def add_nodes_assets_to_system_users(nodes_keys, system_users):
-    from ..models import Node
-    nodes = Node.objects.filter(key__in=nodes_keys)
-    assets = Node.get_nodes_all_assets(*nodes)
-    for system_user in system_users:
-        system_user.assets.add(*tuple(assets))
+def quickstart_automation(task_name, tp, task_snapshot=None):
+    from assets.models import AutomationExecution
+    data = generate_automation_execution_data(task_name, tp, task_snapshot)
+
+    while True:
+        try:
+            _id = data['id']
+            AutomationExecution.objects.get(id=_id)
+            data['id'] = str(uuid.uuid4())
+        except AutomationExecution.DoesNotExist:
+            break
+
+    execution = AutomationExecution.objects.create(
+        trigger=Trigger.manual, **data
+    )
+    execution.start()
