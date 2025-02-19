@@ -1,4 +1,7 @@
 from django.dispatch import Signal
 
+post_auth_success = Signal()
+post_auth_failed = Signal()
 
-post_create_openid_user = Signal(providing_args=('user',))
+user_auth_success = Signal()
+user_auth_failed = Signal()
