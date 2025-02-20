@@ -1,57 +1,44 @@
-
 from django.db import models
-from django.utils.translation import ugettext_lazy as _
-from .base import BaseACL, BaseACLQuerySet
-from common.utils.ip import contains_ip
+from django.utils.translation import gettext_lazy as _
+
+from common.utils import get_request_ip, get_ip_city
+from common.utils.timezone import local_now_display
+from .base import UserBaseACL
 
 
-class ACLManager(models.Manager):
+class LoginACL(UserBaseACL):
+    # 规则, ip_group, time_period
+    rules = models.JSONField(default=dict, verbose_name=_('Rule'))
 
-    def valid(self):
-        return self.get_queryset().valid()
-
-
-class LoginACL(BaseACL):
-    class ActionChoices(models.TextChoices):
-        reject = 'reject', _('Reject')
-        allow = 'allow', _('Allow')
-
-    # 条件
-    ip_group = models.JSONField(default=list, verbose_name=_('Login IP'))
-    # 动作
-    action = models.CharField(
-        max_length=64, choices=ActionChoices.choices, default=ActionChoices.reject,
-        verbose_name=_('Action')
-    )
-    # 关联
-    user = models.ForeignKey(
-        'users.User', on_delete=models.CASCADE, related_name='login_acls', verbose_name=_('User')
-    )
-
-    objects = ACLManager.from_queryset(BaseACLQuerySet)()
-
-    class Meta:
-        ordering = ('priority', '-date_updated', 'name')
+    class Meta(UserBaseACL.Meta):
+        verbose_name = _('Login acl')
+        abstract = False
 
     def __str__(self):
         return self.name
 
-    @property
-    def action_reject(self):
-        return self.action == self.ActionChoices.reject
+    def is_action(self, action):
+        return self.action == action
 
-    @property
-    def action_allow(self):
-        return self.action == self.ActionChoices.allow
-
-    @staticmethod
-    def allow_user_to_login(user, ip):
-        acl = user.login_acls.valid().first()
-        if not acl:
-            return True
-        is_contained = contains_ip(ip, acl.ip_group)
-        if acl.action_allow and is_contained:
-            return True
-        if acl.action_reject and not is_contained:
-            return True
-        return False
+    def create_confirm_ticket(self, request, user):
+        from tickets import const
+        from tickets.models import ApplyLoginTicket
+        from orgs.models import Organization
+        title = _('Login confirm') + ' {}'.format(user)
+        login_ip = get_request_ip(request) if request else ''
+        login_ip = login_ip or '0.0.0.0'
+        login_city = get_ip_city(login_ip)
+        login_datetime = local_now_display()
+        data = {
+            'title': title,
+            'applicant': user,
+            'apply_login_ip': login_ip,
+            'org_id': Organization.ROOT_ID,
+            'apply_login_city': login_city,
+            'apply_login_datetime': login_datetime,
+            'type': const.TicketType.login_confirm,
+        }
+        ticket = ApplyLoginTicket.objects.create(**data)
+        assignees = self.reviewers.all()
+        ticket.open_by_system(assignees)
+        return ticket

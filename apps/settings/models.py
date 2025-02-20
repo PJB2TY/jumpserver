@@ -1,11 +1,19 @@
 import json
 
+from django.conf import settings
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
+from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.db import models
 from django.db.utils import ProgrammingError, OperationalError
-from django.utils.translation import ugettext_lazy as _
-from django.conf import settings
+from django.utils.translation import gettext_lazy as _
+from rest_framework.utils.encoders import JSONEncoder
 
-from common.utils import signer, get_logger
+from common.db.models import JMSBaseModel
+from common.db.utils import Encryptor
+from common.utils import get_logger
+from .const import ChatAITypeChoices
+from .signals import setting_changed
 
 logger = get_logger(__name__)
 
@@ -28,8 +36,8 @@ class SettingManager(models.Manager):
 class Setting(models.Model):
     name = models.CharField(max_length=128, unique=True, verbose_name=_("Name"))
     value = models.TextField(verbose_name=_("Value"), null=True, blank=True)
-    category = models.CharField(max_length=128, default="default")
-    encrypted = models.BooleanField(default=False)
+    category = models.CharField(max_length=128, default="default", verbose_name=_('Category'))
+    encrypted = models.BooleanField(default=False, verbose_name=_('Encrypted'))
     enabled = models.BooleanField(verbose_name=_("Enabled"), default=True)
     comment = models.TextField(verbose_name=_("Comment"))
 
@@ -39,12 +47,15 @@ class Setting(models.Model):
     def __str__(self):
         return self.name
 
+    def is_name(self, name):
+        return self.name == name
+
     @property
     def cleaned_value(self):
         try:
             value = self.value
             if self.encrypted:
-                value = signer.unsign(value)
+                value = Encryptor(value).decrypt()
             if not value:
                 return None
             value = json.loads(value)
@@ -55,9 +66,9 @@ class Setting(models.Model):
     @cleaned_value.setter
     def cleaned_value(self, item):
         try:
-            v = json.dumps(item)
+            v = json.dumps(item, cls=JSONEncoder)
             if self.encrypted:
-                v = signer.sign(v)
+                v = Encryptor(v).encrypt()
             self.value = v
         except json.JSONDecodeError as e:
             raise ValueError("Json dump error: {}".format(str(e)))
@@ -77,58 +88,11 @@ class Setting(models.Model):
         if not item:
             return
         item.refresh_setting()
+        setting_changed.send(sender=cls, name=name, item=item)
 
     def refresh_setting(self):
-        logger.debug(f"Refresh setting: {self.name}")
-        if hasattr(self.__class__, f'refresh_{self.name}'):
-            getattr(self.__class__, f'refresh_{self.name}')()
-        else:
-            setattr(settings, self.name, self.cleaned_value)
+        setattr(settings, self.name, self.cleaned_value)
         self.refresh_keycloak_to_openid_if_need()
-
-    @classmethod
-    def refresh_authentications(cls, name):
-        setting = cls.objects.filter(name=name).first()
-        if not setting:
-            return
-
-        backends_map = {
-            'AUTH_LDAP': [settings.AUTH_BACKEND_LDAP],
-            'AUTH_OPENID': [settings.AUTH_BACKEND_OIDC_CODE, settings.AUTH_BACKEND_OIDC_PASSWORD],
-            'AUTH_RADIUS': [settings.AUTH_BACKEND_RADIUS],
-            'AUTH_CAS': [settings.AUTH_BACKEND_CAS],
-        }
-        setting_backends = backends_map[name]
-        auth_backends = settings.AUTHENTICATION_BACKENDS
-
-        for backend in setting_backends:
-            has = backend in auth_backends
-
-            # 添加
-            if setting.cleaned_value and not has:
-                logger.debug('Add auth backend: {}'.format(name))
-                settings.AUTHENTICATION_BACKENDS.insert(0, backend)
-
-            # 去掉
-            if not setting.cleaned_value and has:
-                index = auth_backends.index(backend)
-                logger.debug('Pop auth backend: {}'.format(name))
-                auth_backends.pop(index)
-
-        # 设置内存值
-        setattr(settings, name, setting.cleaned_value)
-
-    @classmethod
-    def refresh_AUTH_CAS(cls):
-        cls.refresh_authentications('AUTH_CAS')
-
-    @classmethod
-    def refresh_AUTH_LDAP(cls):
-        cls.refresh_authentications('AUTH_LDAP')
-
-    @classmethod
-    def refresh_AUTH_OPENID(cls):
-        cls.refresh_authentications('AUTH_OPENID')
 
     def refresh_keycloak_to_openid_if_need(self):
         watch_config_names = [
@@ -164,10 +128,15 @@ class Setting(models.Model):
         # 刷新 settings
         for key, value in openid_config.items():
             setattr(settings, key, value)
+            self.__class__.update_or_create(key, value, encrypted=False, category=self.category)
 
     @classmethod
-    def refresh_AUTH_RADIUS(cls):
-        cls.refresh_authentications('AUTH_RADIUS')
+    def save_to_file(cls, value: InMemoryUploadedFile):
+        filename = value.name
+        filepath = f'settings/{filename}'
+        path = default_storage.save(filepath, ContentFile(value.read()))
+        url = default_storage.url(path)
+        return url
 
     @classmethod
     def update_or_create(cls, name='', value='', encrypted=False, category=''):
@@ -179,6 +148,10 @@ class Setting(models.Model):
         changed = False
         if not setting:
             setting = Setting(name=name, encrypted=encrypted, category=category)
+
+        if isinstance(value, InMemoryUploadedFile):
+            value = cls.save_to_file(value)
+
         if setting.cleaned_value != value:
             setting.encrypted = encrypted
             setting.cleaned_value = value
@@ -188,4 +161,50 @@ class Setting(models.Model):
 
     class Meta:
         db_table = "settings_setting"
-        verbose_name = _("Setting")
+        verbose_name = _("System setting")
+        permissions = [
+            ('change_email', _('Can change email setting')),
+            ('change_auth', _('Can change auth setting')),
+            ('change_ops', _('Can change auth ops')),
+            ('change_ticket', _('Can change auth ticket')),
+            ('change_virtualapp', _('Can change virtual app setting')),
+            ('change_announcement', _('Can change auth announcement')),
+            ('change_vault', _('Can change vault setting')),
+            ('change_chatai', _('Can change chat ai setting')),
+            ('change_systemmsgsubscription', _('Can change system msg sub setting')),
+            ('change_sms', _('Can change sms setting')),
+            ('change_security', _('Can change security setting')),
+            ('change_clean', _('Can change clean setting')),
+            ('change_interface', _('Can change interface setting')),
+            ('change_license', _('Can change license setting')),
+            ('change_terminal', _('Can change terminal setting')),
+            ('change_other', _('Can change other setting')),
+        ]
+
+
+class ChatPrompt(JMSBaseModel):
+    name = models.CharField(max_length=128, verbose_name=_('Name'), unique=True)
+    content = models.TextField(blank=False, null=False, verbose_name=_('Content'))
+    builtin = models.BooleanField(default=False, verbose_name=_('Builtin'))
+
+    class Meta:
+        verbose_name = _("Chat prompt")
+
+    def __str__(self):
+        return self.name
+
+
+def get_chatai_data():
+    data = {
+        'url': settings.GPT_BASE_URL,
+        'api_key': settings.GPT_API_KEY,
+        'proxy': settings.GPT_PROXY,
+        'model': settings.GPT_MODEL,
+    }
+    if settings.CHAT_AI_TYPE != ChatAITypeChoices.gpt:
+        data['url'] = settings.DEEPSEEK_BASE_URL
+        data['api_key'] = settings.DEEPSEEK_API_KEY
+        data['proxy'] = settings.DEEPSEEK_PROXY
+        data['model'] = settings.DEEPSEEK_MODEL
+
+    return data

@@ -1,95 +1,101 @@
 # -*- coding: utf-8 -*-
 #
-import builtins
-import time
-from django.utils.translation import ugettext as _
-from django.conf import settings
+from django.shortcuts import get_object_or_404
+from django.utils.translation import gettext as _
+from rest_framework import exceptions
+from rest_framework.generics import CreateAPIView, RetrieveAPIView
 from rest_framework.permissions import AllowAny
-from rest_framework.generics import CreateAPIView
-from rest_framework.serializers import ValidationError
 from rest_framework.response import Response
+from rest_framework.serializers import ValidationError
 
-from authentication.sms_verify_code import VerifyCodeUtil
-from common.exceptions import JMSException
-from common.permissions import IsValidUser, NeedMFAVerify, IsAppUser
-from users.models.user import MFAType
-from ..serializers import OtpVerifySerializer
-from .. import serializers
+from common.exceptions import JMSException, UnexpectError
+from common.utils import get_logger
+from users.models.user import User
 from .. import errors
+from .. import serializers
+from ..errors import SessionEmptyError
 from ..mixins import AuthMixin
 
+logger = get_logger(__name__)
 
-__all__ = ['MFAChallengeApi', 'UserOtpVerifyApi', 'SendSMSVerifyCodeApi', 'MFASelectTypeApi']
+__all__ = [
+    'MFAChallengeVerifyApi', 'MFASendCodeApi',
+]
 
 
-class MFASelectTypeApi(AuthMixin, CreateAPIView):
+
+
+# MFASelectAPi 原来的名字
+class MFASendCodeApi(AuthMixin, CreateAPIView):
+    """
+    选择 MFA 后对应操作 api，koko 目前在用
+    """
     permission_classes = (AllowAny,)
     serializer_class = serializers.MFASelectTypeSerializer
+    username = ''
+    ip = ''
+
+    def get_user_from_db(self, username):
+        """避免暴力测试用户名"""
+        ip = self.get_request_ip()
+        self.check_mfa_is_block(username, ip)
+        try:
+            user = get_object_or_404(User, username=username)
+            return user
+        except Exception as e:
+            self.incr_mfa_failed_time(username, ip)
+            raise e
 
     def perform_create(self, serializer):
+        username = serializer.validated_data.get('username', '')
         mfa_type = serializer.validated_data['type']
-        if mfa_type == MFAType.SMS_CODE:
-            user = self.get_user_from_session()
-            user.send_sms_code()
+
+        if not username:
+            try:
+                user = self.get_user_from_session()
+            except errors.SessionEmptyError as e:
+                raise ValidationError({'error': e})
+        else:
+            user = self.get_user_from_db(username)
+
+        mfa_backend = user.get_active_mfa_backend_by_type(mfa_type)
+        if not mfa_backend or not mfa_backend.challenge_required:
+            error = _('Current user not support mfa type: {}').format(mfa_type)
+            raise ValidationError({'error': error})
+
+        try:
+            mfa_backend.send_challenge()
+        except JMSException:
+            raise
+        except Exception as e:
+            raise UnexpectError(str(e))
 
 
-class MFAChallengeApi(AuthMixin, CreateAPIView):
+class MFAChallengeVerifyApi(AuthMixin, CreateAPIView):
     permission_classes = (AllowAny,)
     serializer_class = serializers.MFAChallengeSerializer
 
-    def perform_create(self, serializer):
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
         try:
             user = self.get_user_from_session()
-            code = serializer.validated_data.get('code')
-            mfa_type = serializer.validated_data.get('type', MFAType.OTP)
+        except SessionEmptyError:
+            user = None
+        if not user:
+            raise exceptions.NotAuthenticated()
 
-            valid = user.check_mfa(code, mfa_type=mfa_type)
-            if not valid:
-                self.request.session['auth_mfa'] = ''
-                raise errors.MFAFailedError(
-                    username=user.username, request=self.request, ip=self.get_request_ip()
-                )
-            else:
-                self.request.session['auth_mfa'] = '1'
+    def perform_create(self, serializer):
+        user = self.get_user_from_session()
+        code = serializer.validated_data.get('code')
+        mfa_type = serializer.validated_data.get('type', '')
+        self._do_check_user_mfa(code, mfa_type, user)
+
+    def create(self, request, *args, **kwargs):
+        try:
+            super().create(request, *args, **kwargs)
+            return Response({'msg': 'ok'})
         except errors.AuthFailedError as e:
             data = {"error": e.error, "msg": e.msg}
-            raise ValidationError(data)
+            return Response(data, status=401)
         except errors.NeedMoreInfoError as e:
             return Response(e.as_data(), status=200)
-
-    def create(self, request, *args, **kwargs):
-        super().create(request, *args, **kwargs)
-        return Response({'msg': 'ok'})
-
-
-class UserOtpVerifyApi(CreateAPIView):
-    permission_classes = (IsValidUser,)
-    serializer_class = OtpVerifySerializer
-
-    def get(self, request, *args, **kwargs):
-        return Response({'code': 'valid', 'msg': 'verified'})
-
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        code = serializer.validated_data["code"]
-
-        if request.user.check_mfa(code):
-            request.session["MFA_VERIFY_TIME"] = int(time.time())
-            return Response({"ok": "1"})
-        else:
-            return Response({"error": _("Code is invalid")}, status=400)
-
-    def get_permissions(self):
-        if self.request.method.lower() == 'get' and settings.SECURITY_VIEW_AUTH_NEED_MFA:
-            self.permission_classes = [NeedMFAVerify]
-        return super().get_permissions()
-
-
-class SendSMSVerifyCodeApi(AuthMixin, CreateAPIView):
-    permission_classes = (AllowAny,)
-
-    def create(self, request, *args, **kwargs):
-        user = self.get_user_from_session()
-        timeout = user.send_sms_code()
-        return Response({'code': 'ok','timeout': timeout})

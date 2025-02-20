@@ -1,28 +1,27 @@
+from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
-from django.utils.translation import ugettext_lazy as _
 
-from common.drf.serializers import BulkModelSerializer, AdaptedBulkListSerializer
-from common.utils import is_uuid
+from common.serializers import BulkModelSerializer
+from common.serializers.fields import LabeledChoiceField
+from common.utils import get_request_ip, pretty_string, is_uuid
 from users.serializers import ServiceAccountSerializer
-from common.utils import get_request_ip
-
-from ..models import (
-    Terminal, Status, Session, Task, CommandStorage, ReplayStorage
-)
+from .. import const
+from ..models import Terminal, Status, Task, CommandStorage, ReplayStorage
 
 
-class StatusSerializer(serializers.ModelSerializer):
+class StatSerializer(serializers.ModelSerializer):
     sessions = serializers.ListSerializer(
-        child=serializers.CharField(max_length=36), write_only=True
+        child=serializers.CharField(max_length=36),
+        write_only=True
     )
 
     class Meta:
+        model = Status
         fields_mini = ['id']
         fields_write_only = ['sessions', ]
         fields_small = fields_mini + fields_write_only + [
             'cpu_load', 'memory_used', 'disk_used',
-            'session_online',
-            'date_created'
+            'session_online', 'date_created'
         ]
         fields_fk = ['terminal']
         fields = fields_small + fields_fk
@@ -31,30 +30,36 @@ class StatusSerializer(serializers.ModelSerializer):
             "memory_used": {'default': 0},
             "disk_used": {'default': 0},
         }
-        model = Status
+
+
+class TerminalSmallSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Terminal
+        fields = ['id', 'name', 'type']
 
 
 class TerminalSerializer(BulkModelSerializer):
-    session_online = serializers.ReadOnlyField(source='get_online_session_count')
-    is_alive = serializers.BooleanField(read_only=True)
-    status = serializers.CharField(read_only=True, source='latest_status')
-    status_display = serializers.CharField(read_only=True, source='latest_status_display')
-    stat = StatusSerializer(read_only=True, source='latest_stat')
+    session_online = serializers.ReadOnlyField(source='get_online_session_count', label=_('Online sessions'))
+    is_alive = serializers.BooleanField(read_only=True, label=_('Is alive'))
+    is_active = serializers.BooleanField(read_only=True, label=_('Active'))
+    load = LabeledChoiceField(
+        read_only=True, choices=const.ComponentLoad.choices,
+        label=_('Load status')
+    )
+    stat = StatSerializer(read_only=True, source='last_stat', label=_('Stat'))
 
     class Meta:
         model = Terminal
         fields_mini = ['id', 'name']
         fields_small = fields_mini + [
-            'type', 'remote_addr', 'http_port', 'ssh_port',
-            'session_online', 'command_storage', 'replay_storage',
-            'is_accepted', "is_active", 'is_alive',
-            'date_created',
-            'comment',
+            'type', 'remote_addr', 'session_online',
+            'command_storage', 'replay_storage',
+            'is_active', 'is_alive',
+            'date_created', 'comment',
         ]
-        fields_fk = ['status', 'status_display', 'stat']
+        fields_fk = ['load', 'stat']
         fields = fields_small + fields_fk
         read_only_fields = ['type', 'date_created']
-
         extra_kwargs = {
             'command_storage': {'required': True, },
             'replay_storage': {'required': True, },
@@ -108,12 +113,11 @@ class TerminalRegistrationSerializer(serializers.ModelSerializer):
         valid = super().is_valid(raise_exception=raise_exception)
         if not valid:
             return valid
-        name = self.validated_data.get('name')
-        if len(name) > 128:
-            self.validated_data['comment'] = name
-            name = '{}...{}'.format(name[:32], name[-32:])
-            self.validated_data['name'] = name
-
+        raw_name = self.validated_data.get('name')
+        name = pretty_string(raw_name)
+        self.validated_data['name'] = name
+        if len(raw_name) > 128:
+            self.validated_data['comment'] = raw_name
         data = {'name': name}
         kwargs = {'data': data}
         if self.instance and self.instance.user:
@@ -122,15 +126,29 @@ class TerminalRegistrationSerializer(serializers.ModelSerializer):
         valid = self.service_account.is_valid(raise_exception=True)
         return valid
 
-    def save(self, **kwargs):
-        instance = super().save(**kwargs)
+    def create(self, validated_data):
+        instance = super().create(validated_data)
         request = self.context.get('request')
         instance.is_accepted = True
         if request:
             instance.remote_addr = get_request_ip(request)
-        sa = self.service_account.save()
+        sa = self.service_account.create(validated_data)
+        sa.system_roles.add_role_system_component()
         instance.user = sa
         instance.command_storage = CommandStorage.default().name
         instance.replay_storage = ReplayStorage.default().name
         instance.save()
         return instance
+
+
+class ConnectMethodSerializer(serializers.Serializer):
+    value = serializers.CharField(max_length=128)
+    label = serializers.CharField(max_length=128)
+    type = serializers.CharField(max_length=128)
+    endpoint_protocol = serializers.CharField(max_length=128)
+    component = serializers.CharField(max_length=128)
+
+
+class EncryptedConfigSerializer(serializers.Serializer):
+    secret_encrypt_key = serializers.CharField(max_length=128)
+    encrypted_value = serializers.CharField(max_length=128)

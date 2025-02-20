@@ -1,57 +1,68 @@
-# 编译代码
-FROM python:3.8.6-slim as stage-build
-MAINTAINER JumpServer Team <ibuler@qq.com>
+FROM jumpserver/core-base:20241210_070105 AS stage-build
+
 ARG VERSION
-ENV VERSION=$VERSION
 
 WORKDIR /opt/jumpserver
+
 ADD . .
-RUN cd utils && bash -ixeu build.sh
+
+RUN echo > /opt/jumpserver/config.yml \
+    && \
+    if [ -n "${VERSION}" ]; then \
+        sed -i "s@VERSION = .*@VERSION = '${VERSION}'@g" apps/jumpserver/const.py; \
+    fi
+
+RUN set -ex \
+    && export SECRET_KEY=$(head -c100 < /dev/urandom | base64 | tr -dc A-Za-z0-9 | head -c 48) \
+    && . /opt/py3/bin/activate \
+    && cd apps \
+    && python manage.py compilemessages
 
 
-# 构建运行时环境
-FROM python:3.8.6-slim
-ARG PIP_MIRROR=https://pypi.douban.com/simple
-ENV PIP_MIRROR=$PIP_MIRROR
-ARG PIP_JMS_MIRROR=https://pypi.douban.com/simple
-ENV PIP_JMS_MIRROR=$PIP_JMS_MIRROR
+FROM python:3.11-slim-bullseye
+ENV LANG=en_US.UTF-8 \
+    PATH=/opt/py3/bin:$PATH
+
+ARG DEPENDENCIES="                    \
+        libldap2-dev                  \
+        libx11-dev"
+
+ARG TOOLS="                           \
+        cron                          \
+        ca-certificates               \
+        default-libmysqlclient-dev    \
+        openssh-client                \
+        sshpass                       \
+        bubblewrap"
+
+ARG APT_MIRROR=http://deb.debian.org
+
+RUN set -ex \
+    && sed -i "s@http://.*.debian.org@${APT_MIRROR}@g" /etc/apt/sources.list \
+    && ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+    && apt-get update > /dev/null \
+    && apt-get -y install --no-install-recommends ${DEPENDENCIES} \
+    && apt-get -y install --no-install-recommends ${TOOLS} \
+    && mkdir -p /root/.ssh/ \
+    && echo "Host *\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile /dev/null\n\tCiphers +aes128-cbc\n\tKexAlgorithms +diffie-hellman-group1-sha1\n\tHostKeyAlgorithms +ssh-rsa" > /root/.ssh/config \
+    && echo "no" | dpkg-reconfigure dash \
+    && apt-get clean all \
+    && rm -rf /var/lib/apt/lists/* \
+    && echo "0 3 * * * root find /tmp -type f -mtime +1 -size +1M -exec rm -f {} \; && date > /tmp/clean.log" > /etc/cron.d/cleanup_tmp \
+    && chmod 0644 /etc/cron.d/cleanup_tmp
+
+COPY --from=stage-build /opt /opt
+COPY --from=stage-build /usr/local/bin /usr/local/bin
+COPY --from=stage-build /opt/jumpserver/apps/libs/ansible/ansible.cfg /etc/ansible/
 
 WORKDIR /opt/jumpserver
 
-COPY ./requirements/deb_buster_requirements.txt ./requirements/deb_buster_requirements.txt
-RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list \
-    && sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list \
-    && apt update \
-    && apt -y install telnet iproute2 redis-tools \
-    && grep -v '^#' ./requirements/deb_buster_requirements.txt | xargs apt -y install \
-    && rm -rf /var/lib/apt/lists/* \
-    && localedef -c -f UTF-8 -i zh_CN zh_CN.UTF-8 \
-    && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
-    && sed -i "s@# alias l@alias l@g" ~/.bashrc \
-    && echo "set mouse-=a" > ~/.vimrc
-
-COPY ./requirements/requirements.txt ./requirements/requirements.txt
-RUN pip install --upgrade pip==20.2.4 setuptools==49.6.0 wheel==0.34.2 -i ${PIP_MIRROR} \
-    && pip config set global.index-url ${PIP_MIRROR} \
-    && pip install --no-cache-dir $(grep -E 'jms|jumpserver' requirements/requirements.txt) -i ${PIP_JMS_MIRROR} \
-    && pip install --no-cache-dir -r requirements/requirements.txt
-
-COPY --from=stage-build /opt/jumpserver/release/jumpserver /opt/jumpserver
-RUN mkdir -p /root/.ssh/ \
-    && echo "Host *\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile /dev/null" > /root/.ssh/config
-
-RUN mkdir -p /opt/jumpserver/oracle/
-ADD https://download.jumpserver.org/public/instantclient-basiclite-linux.x64-21.1.0.0.0.tar /opt/jumpserver/oracle/
-RUN tar xvf /opt/jumpserver/oracle/instantclient-basiclite-linux.x64-21.1.0.0.0.tar -C /opt/jumpserver/oracle/
-RUN sh -c "echo /opt/jumpserver/oracle/instantclient_21_1 > /etc/ld.so.conf.d/oracle-instantclient.conf"
-RUN ldconfig
-
-RUN echo > config.yml
 VOLUME /opt/jumpserver/data
-VOLUME /opt/jumpserver/logs
 
-ENV LANG=zh_CN.UTF-8
-
-EXPOSE 8070
-EXPOSE 8080
 ENTRYPOINT ["./entrypoint.sh"]
+
+EXPOSE 8080
+
+STOPSIGNAL SIGQUIT
+
+CMD ["start", "all"]

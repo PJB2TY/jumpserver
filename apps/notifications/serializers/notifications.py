@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from common.drf.serializers import BulkModelSerializer
+from common.serializers import BulkModelSerializer
 from notifications.models import SystemMsgSubscription, UserMsgSubscription
 
 
@@ -21,6 +21,10 @@ class SystemMsgSubscriptionSerializer(BulkModelSerializer):
             'groups': {'allow_empty': True},
             'receive_backends': {'required': True}
         }
+
+    def update(self, instance, validated_data):
+        instance.set_message_type_label()
+        return super().update(instance, validated_data)
 
 
 class SystemMsgSubscriptionByCategorySerializer(serializers.Serializer):
