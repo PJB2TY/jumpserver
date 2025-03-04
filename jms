@@ -1,311 +1,181 @@
 #!/usr/bin/env python3
 # coding: utf-8
 
-import os
-import subprocess
-import threading
-import time
 import argparse
+import logging
+import logging.handlers
+import os
 import sys
-import signal
+import time
+
+import django
+from django.core import management
+from django.db.utils import OperationalError
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(BASE_DIR)
+APP_DIR = os.path.join(BASE_DIR, 'apps')
 
-from apps import __version__
+os.chdir(APP_DIR)
+sys.path.insert(0, APP_DIR)
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "jumpserver.settings")
+django.setup()
+
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
 try:
-    from config import config as CONFIG
-except ImportError:
-    print("Could not find config file, `cp config_example.py config.py`")
+    from jumpserver import const
+
+    __version__ = const.VERSION
+except ImportError as e:
+    print("Not found __version__: {}".format(e))
+    print("Python is: ")
+    logging.info(sys.executable)
+    __version__ = 'Unknown'
+    sys.exit(1)
+
+try:
+    from jumpserver.const import CONFIG
+    from common.utils.file import download_file
+    from common.utils import make_dirs
+except ImportError as e:
+    print("Import error: {}".format(e))
+    print("Could not find config file, `cp config_example.yml config.yml`")
     sys.exit(1)
 
 os.environ["PYTHONIOENCODING"] = "UTF-8"
-APPS_DIR = os.path.join(BASE_DIR, 'apps')
-LOG_DIR = os.path.join(BASE_DIR, 'logs')
-TMP_DIR = os.path.join(BASE_DIR, 'tmp')
-HTTP_HOST = CONFIG.HTTP_BIND_HOST or '127.0.0.1'
-HTTP_PORT = CONFIG.HTTP_LISTEN_PORT or 8080
-DEBUG = CONFIG.DEBUG
-LOG_LEVEL = CONFIG.LOG_LEVEL
 
-START_TIMEOUT = 15
-WORKERS = 4
-DAEMON = False
+logging.basicConfig(
+    format='%(asctime)s %(message)s', level=logging.INFO,
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
-EXIT_EVENT = threading.Event()
-all_services = ['gunicorn', 'celery', 'beat']
+logger = logging.getLogger()
 
 try:
-    os.makedirs(os.path.join(BASE_DIR, "data", "static"))
-    os.makedirs(os.path.join(BASE_DIR, "data", "media"))
+    make_dirs(os.path.join(BASE_DIR, "data", "static"))
+    make_dirs(os.path.join(BASE_DIR, "data", "media"))
 except:
     pass
 
+
 def check_database_connection():
-    os.chdir(os.path.join(BASE_DIR, 'apps'))
     for i in range(60):
-        print("Check database connection ...")
-        code = subprocess.call("python manage.py showmigrations users ", shell=True)
-        if code == 0:
-            print("Database connect success")
+        logging.info(f"Check database connection: {i}")
+        try:
+            management.call_command('check', '--database', 'default')
+            logging.info("Database connect success")
             return
+        except OperationalError:
+            logging.info('Database not setup, retry')
+        except Exception as exc:
+            logging.error('Unexpect error occur: {}'.format(str(exc)))
         time.sleep(1)
-    print("Connection database failed, exist")
+    logging.error("Connection database failed, exit")
     sys.exit(10)
 
 
-def make_migrations():
-    print("Check database structure change ...")
-    os.chdir(os.path.join(BASE_DIR, 'apps'))
-    if len(os.listdir('assets/migrations')) < 4:
-        print("Make database migrations ...")
-        subprocess.call('python3 manage.py makemigrations', shell=True)
-    print("Migrate model change to database ...")
-    subprocess.call('python3 manage.py migrate', shell=True)
+def expire_caches():
+    try:
+        management.call_command('expire_caches')
+    except:
+        pass
+
+
+def perform_db_migrate():
+    logging.info("Check database structure change ...")
+    logging.info("Migrate model change to database ...")
+
+    try:
+        management.call_command('migrate')
+    except Exception as e:
+        logging.error('Perform migrate failed')
+        raise e
 
 
 def collect_static():
-    print("Collect static files")
+    logging.info("Collect static files")
+    try:
+        management.call_command('collectstatic', '--no-input', '-c', verbosity=0, interactive=False)
+        logging.info("Collect static files done")
+    except:
+        pass
+
+
+def compile_i18n_file():
+    django_mo_file = os.path.join(BASE_DIR, 'apps', 'core', 'locale', 'zh', 'LC_MESSAGES', 'django.mo')
+    if os.path.exists(django_mo_file):
+        return
     os.chdir(os.path.join(BASE_DIR, 'apps'))
-    subprocess.call('python3 manage.py collectstatic --no-input', shell=True)
+    management.call_command('compilemessages', verbosity=0, interactive=False)
+    logging.info("Compile i18n files done")
+
+
+def download_ip_db():
+    db_base_dir = os.path.join(APP_DIR, 'common', 'utils', 'ip')
+    db_path_url_mapper = {
+        ('geoip', 'GeoLite2-City.mmdb'): 'https://jms-pkg.oss-cn-beijing.aliyuncs.com/ip/GeoLite2-City.mmdb',
+        ('ipip', 'ipipfree.ipdb'): 'https://jms-pkg.oss-cn-beijing.aliyuncs.com/ip/ipipfree.ipdb'
+    }
+    for p, src in db_path_url_mapper.items():
+        path = os.path.join(db_base_dir, *p)
+        if os.path.isfile(path) and os.path.getsize(path) > 1000:
+            continue
+        print("Download ip db: {}".format(path))
+        download_file(src, path)
+
+
+def install_builtin_applets():
+    logging.info("Install builtin applets")
+    try:
+        management.call_command('install_builtin_applets', verbosity=0)
+    except Exception as e:
+        logging.error("Install builtin applets err: {}".format(e))
+
+
+def upgrade_db():
+    collect_static()
+    perform_db_migrate()
 
 
 def prepare():
     check_database_connection()
-    make_migrations()
-    collect_static()
+    upgrade_db()
+    expire_caches()
+    download_ip_db()
+    install_builtin_applets()
 
 
-def check_pid(pid):
-    """ Check For the existence of a unix pid. """
+def start_services():
+    services = args.services if isinstance(args.services, list) else [args.services]
+    if action == 'start' and {'all', 'web'} & set(services):
+        prepare()
+
+    start_args = []
+    if args.daemon:
+        start_args.append('--daemon')
+    if args.force:
+        start_args.append('--force')
+    if args.worker:
+        start_args.extend(['--worker', str(args.worker)])
+    else:
+        worker = os.environ.get('CORE_WORKER')
+        if isinstance(worker, str) and worker.isdigit():
+            start_args.extend(['--worker', worker])
+
     try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    else:
-        return True
-
-
-def get_pid_file_path(service):
-    return os.path.join(TMP_DIR, '{}.pid'.format(service))
-
-
-def get_log_file_path(service):
-    return os.path.join(LOG_DIR, '{}.log'.format(service))
-
-
-def get_pid(service):
-    pid_file = get_pid_file_path(service)
-    if os.path.isfile(pid_file):
-        with open(pid_file) as f:
-            try:
-                return int(f.read().strip())
-            except ValueError:
-                return 0
-    return 0
-
-
-def is_running(s, unlink=True):
-    pid_file = get_pid_file_path(s)
-
-    if os.path.isfile(pid_file):
-        with open(pid_file, 'r') as f:
-            pid = get_pid(s)
-        if check_pid(pid):
-            return True
-
-        if unlink:
-            os.unlink(pid_file)
-    return False
-
-
-def parse_service(s):
-    if s == 'all':
-        return all_services
-    else:
-        return [s]
-
-
-def start_gunicorn():
-    print("\n- Start Gunicorn WSGI HTTP Server")
-    service = 'gunicorn'
-    bind = '{}:{}'.format(HTTP_HOST, HTTP_PORT)
-    log_format = '%(h)s %(t)s "%(r)s" %(s)s %(b)s '
-    pid_file = get_pid_file_path(service)
-    log_file = get_log_file_path(service)
-
-    cmd = [
-        'gunicorn', 'jumpserver.wsgi',
-        '-b', bind,
-        #'-k', 'eventlet',
-        '-k', 'gthread',
-        '--threads', '10',
-        '-w', str(WORKERS),
-        '--max-requests', '4096',
-        '--access-logformat', log_format,
-        '-p', pid_file,
-    ]
-
-    if DAEMON:
-        cmd.extend([
-            '--access-logfile', log_file,
-            '--daemon',
-        ])
-    else:
-        cmd.extend([
-            '--access-logfile', '-'
-        ])
-    if DEBUG:
-        cmd.append('--reload')
-    p = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, cwd=APPS_DIR)
-    return p
-
-
-def start_celery():
-    print("\n- Start Celery as Distributed Task Queue")
-    # Todo: Must set this environment, otherwise not no ansible result return
-    os.environ.setdefault('PYTHONOPTIMIZE', '1')
-
-    if os.getuid() == 0:
-        os.environ.setdefault('C_FORCE_ROOT', '1')
-
-    service = 'celery'
-    pid_file = get_pid_file_path(service)
-
-    cmd = [
-        'celery', 'worker',
-        '-A',  'ops',
-        '-l', LOG_LEVEL.lower(),
-        '--pidfile', pid_file,
-        '--autoscale', '20,4',
-    ]
-    if DAEMON:
-        cmd.extend([
-            '--logfile', os.path.join(LOG_DIR, 'celery.log'),
-            '--detach',
-        ])
-    p = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, cwd=APPS_DIR)
-    return p
-
-
-def start_beat():
-    print("\n- Start Beat as Periodic Task Scheduler")
-
-    pid_file = get_pid_file_path('beat')
-    log_file = get_log_file_path('beat')
-
-    os.environ.setdefault('PYTHONOPTIMIZE', '1')
-    if os.getuid() == 0:
-        os.environ.setdefault('C_FORCE_ROOT', '1')
-
-    scheduler = "django_celery_beat.schedulers:DatabaseScheduler"
-    cmd = [
-        'celery',  'beat',
-        '-A', 'ops',
-        '--pidfile', pid_file,
-        '-l', LOG_LEVEL,
-        '--scheduler', scheduler,
-        '--max-interval', '60'
-    ]
-    if DAEMON:
-        cmd.extend([
-            '--logfile', log_file,
-            '--detach',
-        ])
-    p = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, cwd=APPS_DIR)
-    return p
-
-
-def start_service(s):
-    print(time.ctime())
-    print('Jumpserver version {}, more see https://www.jumpserver.org'.format(
-        __version__))
-    prepare()
-
-    services_handler = {
-         "gunicorn": start_gunicorn,
-         "celery": start_celery,
-         "beat": start_beat
-    }
-
-    services_set = parse_service(s)
-    processes = []
-    for i in services_set:
-        if is_running(i):
-            show_service_status(i)
-            continue
-        func = services_handler.get(i)
-        p = func()
-        processes.append(p)
-
-    now = int(time.time())
-    for i in services_set:
-        while not is_running(i):
-            if int(time.time()) - now < START_TIMEOUT:
-                time.sleep(1)
-                continue
-            else:
-                print("Error: {} start error".format(i))
-                stop_multi_services(services_set)
-                return
-
-    stop_event = threading.Event()
-
-    if not DAEMON:
-        signal.signal(signal.SIGTERM, lambda x, y: stop_event.set())
-        while not stop_event.is_set():
-            try:
-                time.sleep(10)
-            except KeyboardInterrupt:
-                stop_event.set()
-                break
-
-        print("Stop services")
-        for p in processes:
-            p.terminate()
-
-        for i in services_set:
-            stop_service(i)
-    else:
-        print()
-        show_service_status(s)
-
-
-def stop_service(s, sig=15):
-    services_set = parse_service(s)
-    for s in services_set:
-        if not is_running(s):
-            show_service_status(s)
-            continue
-        print("Stop service: {}".format(s))
-        pid = get_pid(s)
-        os.kill(pid, sig)
-
-
-def stop_multi_services(services):
-    for s in services:
-        stop_service(s, sig=9)
-
-
-def stop_service_force(s):
-    stop_service(s, sig=9)
-
-
-def show_service_status(s):
-    services_set = parse_service(s)
-    for ns in services_set:
-        if is_running(ns):
-            pid = get_pid(ns)
-            print("{} is running: {}".format(ns, pid))
-        else:
-            print("{} is stopped".format(ns))
+        management.call_command(action, *services, *start_args)
+    except KeyboardInterrupt:
+        logging.info('Cancel ...')
+        time.sleep(2)
+    except Exception as exc:
+        logging.error("Start service error {}: {}".format(services, exc))
+        time.sleep(2)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description="""
-        Jumpserver service control tools;
+        JumpServer service control tools;
 
         Example: \r\n
 
@@ -314,34 +184,24 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         'action', type=str,
-        choices=("start", "stop", "restart", "status"),
+        choices=("start", "stop", "restart", "status", "upgrade_db", "collect_static"),
         help="Action to run"
     )
     parser.add_argument(
-        "service", type=str, default="all", nargs="?",
-        choices=("all", "gunicorn", "celery", "beat"),
+        "services", type=str, default='all', nargs="*",
+        choices=("all", "web", "task"),
         help="The service to start",
     )
-    parser.add_argument('-d', '--daemon', nargs="?", const=1)
-    parser.add_argument('-w', '--worker', type=int, nargs="?", const=4)
-    args = parser.parse_args()
-    if args.daemon:
-        DAEMON = True
+    parser.add_argument('-d', '--daemon', nargs="?", const=True)
+    parser.add_argument('-w', '--worker', type=int, nargs="?")
+    parser.add_argument('-f', '--force', nargs="?", const=True)
 
-    if args.worker:
-        WORKERS = args.worker
+    args = parser.parse_args()
 
     action = args.action
-    srv = args.service
-
-    if action == "start":
-        start_service(srv)
-    elif action == "stop":
-        stop_service(srv)
-    elif action == "restart":
-        DAEMON = True
-        stop_service(srv)
-        time.sleep(5)
-        start_service(srv)
+    if action == "upgrade_db":
+        upgrade_db()
+    elif action == "collect_static":
+        collect_static()
     else:
-        show_service_status(srv)
+        start_services()

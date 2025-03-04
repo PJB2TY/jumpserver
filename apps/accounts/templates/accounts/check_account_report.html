@@ -1,0 +1,105 @@
+{% load i18n %}
+{% load static %}
+
+
+<div class="report-container">
+    <header class="header">
+        {% autoescape off %}
+            {{ logo }}
+        {% endautoescape %}
+    </header>
+
+    <div class="info-section">
+        <h2 class="info">
+            {% trans 'The following is a summary of the account check tasks. Please review and handle them' %}
+        </h2>
+    </div>
+
+    <main class="main-section">
+        <div class="synopsis-section">
+            <div class="synopsis-item">
+                <div class="synopsis-item-content">
+                    <p>
+                        <span class="item-label">{% trans 'Task name' %}</span>:
+                        <span>{{ execution.automation.name }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Date start' %}</span>:
+                        <span>{{ execution.date_start | date:"Y/m/d H:i:s" }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Date end' %}</span>:
+                        <span>{{ execution.date_finished | date:"Y/m/d H:i:s" }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Time using' %}</span>:
+                        <span>{{ execution.duration }}s</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Accounts amount' %}</span>:
+                        <span>{{ summary.accounts }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Ok count' %}</span>:
+                        <span>{{ summary.ok }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'No password count' %}</span>:
+                        <span>{{ summary.no_secret }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Asset success count' %}</span>:
+                        <span>{{ summary.ok_assets | default:0 }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Asset failed count' %}</span>:
+                        <span>{{ summary.fail_assets | default:0 }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Asset not support count' %}</span>:
+                        <span>{{ summary.error_assets | default:0 }}</span>
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="tabel-section tabel-summery-section">
+            <div class="new-accounts result-section table-responsive">
+                <div class="section-header">
+                    <h3>
+                        {% trans 'Weak password' %}:
+                        <span>{{ summary.weak_password | default:0 }}</span>
+                    </h3>
+                </div>
+                {% if summary.ok_accounts %}
+                    <table class="custom-table table-striped table-hover data-table">
+                        <thead>
+                        <tr>
+                            <th>{% trans 'No' %}</th>
+                            <th>{% trans 'Asset' %}</th>
+                            <th>{% trans 'Username' %}</th>
+                            <th>{% trans 'Result' %}</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        {% for account in result.weak_password %}
+                            <tr>
+                                <td>{{ forloop.counter }}</td>
+                                <td>{{ account.asset }}</td>
+                                <td>{{ account.username }}</td>
+                                <td style="color: red">{% trans 'Weak password' %}</td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p class="no-data">{% trans 'No weak password' %}</p>
+                {% endif %}
+            </div>
+        </div>
+    </main>
+</div>
+
+<style>
+    {% include './css/report.css' %}
+</style>

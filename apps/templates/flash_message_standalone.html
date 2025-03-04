@@ -1,84 +1,72 @@
-{% load i18n %}
+{% extends '_base_only_content.html' %}
 {% load static %}
-<!DOCTYPE html>
-<html>
+{% load i18n %}
+{% block html_title %} {{ title }} {% endblock %}
+{% block title %} {{ title }}{% endblock %}
 
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <title>{{ title }}</title>
-
-    {% include '_head_css_js.html' %}
-    <link href="{% static "css/jumpserver.css" %}" rel="stylesheet">
-    <script type="text/javascript" src="{% url 'javascript-catalog' %}"></script>
-    <script src="{% static "js/jumpserver.js" %}"></script>
-
-</head>
-
-<body class="gray-bg">
-    <div class="passwordBox2 animated fadeInDown">
-        <div class="row">
-            <div class="col-md-12">
-                <div class="ibox-content">
-                    <div>
-                        <img src="{% static 'img/logo.png' %}" style="margin: auto" width="82" height="82">
-                        <h2 style="display: inline">Jumpserver</h2>
-                    </div>
-                    {% if errors %}
-                    <p>
-                        <div class="alert alert-danger">
-                            {{ errors }}
-                        </div>
-                    </p>
-                    {% endif %}
-
-                    {% if messages %}
-                        <p>
-                        <div class="alert alert-success" id="messages">
-                            {{ messages|safe }}
-                        </div>
-                    </p>
-                    {% endif %}
-                    <div class="row">
-                        <div class="col-lg-3">
-                                <a href="{{ redirect_url }}" class="btn btn-primary block full-width m-b">{% trans 'Return' %}</a>
-                        </div>
-                    </div>
-                </div>
+{% block content %}
+    <style>
+        .alert.alert-msg {
+            background: #F5F5F7;
+        }
+    </style>
+    <div>
+        <p>
+            <div class="alert {% if error %} alert-danger {% else %} alert-info {% endif %}" id="messages">
+            {% if error %}
+                {{ error }}
+            {% else %}
+                {{ message | safe }}
+            {% endif %}
             </div>
-        </div>
-        <hr/>
+        </p>
+
         <div class="row">
-            <div class="col-md-6">
-                {% include '_copyright.html' %}
+            {% if has_cancel %}
+                <div class="col-sm-3">
+                <a href="{{ cancel_url }}" class="btn btn-default block full-width m-b">
+                    {% trans 'Cancel' %}
+                </a>
             </div>
-            <div class="col-md-6 text-right">
-               <small>2014-2018</small>
+            {% endif %}
+            <div class="col-sm-3">
+                <a href="{{ redirect_url }}" class="btn btn-primary block full-width m-b">
+                    {% if confirm_button %}
+                        {{ confirm_button }}
+                    {% else %}
+                        {% trans 'Confirm' %}
+                    {% endif %}
+                </a>
             </div>
         </div>
     </div>
-</body>
-<script>
-    var time = '{{ interval }}';
-    if (!time){
-        time = 5;
-    } else {
-        time = parseInt(time);
-    }
+{% endblock %}
+
+{% block custom_foot_js %}
+    <script>
+    var ttl = 2
+    var message = ''
+    var time = '{{ interval }}'
+    {% if error %}
+        message = '{{ error }}'
+    {% else %}
+        message = '{{ message|safe }}'
+    {% endif %}
+    var redirect_url = '{{ redirect_url }}'
+
     function redirect_page() {
         if (time >= 0) {
-            var messages = '{{ messages|safe }}， <b>' + time +'</b> ...';
-            $('#messages').html(messages);
-            time--;
-            setTimeout(redirect_page, 1000);
-        }
-        else {
-            window.location.href = "{{ redirect_url }}";
+            var msg = message + '， <b>' + time + '</b> ...';
+            $('#messages').html(msg);
+            time -= ttl;
+            setTimeout(redirect_page, ttl * 1000);
+        } else {
+            window.location.href = redirect_url
         }
     }
     {% if auto_redirect %}
-    window.onload = redirect_page;
+        window.onload = redirect_page;
     {% endif %}
 </script>
-</html>
+{% endblock %}
+

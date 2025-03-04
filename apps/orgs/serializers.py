@@ -1,81 +1,52 @@
-
-from rest_framework.serializers import ModelSerializer
+from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
-from rest_framework_bulk import BulkListSerializer
+from rest_framework.serializers import ModelSerializer
 
-from users.models import User, UserGroup
-from assets.models import Asset, Domain, AdminUser, SystemUser, Label
-from perms.models import AssetPermission
-from .utils import set_current_org, get_current_org
 from .models import Organization
-from .mixins import OrgMembershipSerializerMixin
+from .utils import get_current_org
+
+
+class ResourceStatisticsSerializer(serializers.Serializer):
+    users_amount = serializers.IntegerField(required=False, label=_('Users amount'))
+    groups_amount = serializers.IntegerField(required=False, label=_('User groups amount'))
+
+    assets_amount = serializers.IntegerField(required=False, label=_('Assets amount'))
+    nodes_amount = serializers.IntegerField(required=False, label=_('Nodes amount'))
+    domains_amount = serializers.IntegerField(required=False, label=_('Domains amount'))
+    gateways_amount = serializers.IntegerField(required=False, label=_('Gateways amount'))
+
+    asset_perms_amount = serializers.IntegerField(required=False, label=_('Asset permissions amount'))
 
 
 class OrgSerializer(ModelSerializer):
-    class Meta:
-        model = Organization
-        list_serializer_class = BulkListSerializer
-        fields = '__all__'
-        read_only_fields = ['id', 'created_by', 'date_created']
-
-
-class OrgReadSerializer(ModelSerializer):
-    admins = serializers.SlugRelatedField(slug_field='name', many=True, read_only=True)
-    users = serializers.SlugRelatedField(slug_field='name', many=True, read_only=True)
-    user_groups = serializers.SerializerMethodField()
-    assets = serializers.SerializerMethodField()
-    domains = serializers.SerializerMethodField()
-    admin_users = serializers.SerializerMethodField()
-    system_users = serializers.SerializerMethodField()
-    labels = serializers.SerializerMethodField()
-    perms = serializers.SerializerMethodField()
+    resource_statistics = ResourceStatisticsSerializer(source='resource_statistics_cache', read_only=True)
 
     class Meta:
         model = Organization
-        fields = '__all__'
+        fields_mini = ['id', 'name']
+        fields_small = fields_mini + [
+            'resource_statistics',
+            'is_default', 'is_root', 'internal',
+            'date_created', 'created_by',
+            'comment', 'created_by',
+        ]
 
-    @staticmethod
-    def get_data_from_model(obj, model):
-        current_org = get_current_org()
-        set_current_org(Organization.root())
-        if model == Asset:
-            data = [o.hostname for o in model.objects.filter(org_id=obj.id)]
-        else:
-            data = [o.name for o in model.objects.filter(org_id=obj.id)]
-        set_current_org(current_org)
-        return data
-
-    def get_user_groups(self, obj):
-        return self.get_data_from_model(obj, UserGroup)
-
-    def get_assets(self, obj):
-        return self.get_data_from_model(obj, Asset)
-
-    def get_domains(self, obj):
-        return self.get_data_from_model(obj, Domain)
-
-    def get_admin_users(self, obj):
-        return self.get_data_from_model(obj, AdminUser)
-
-    def get_system_users(self, obj):
-        return self.get_data_from_model(obj, SystemUser)
-
-    def get_labels(self, obj):
-        return self.get_data_from_model(obj, Label)
-
-    def get_perms(self, obj):
-        return self.get_data_from_model(obj, AssetPermission)
+        fields_m2m = []
+        fields = fields_small + fields_m2m
+        read_only_fields = ['created_by', 'date_created']
 
 
-class OrgMembershipAdminSerializer(OrgMembershipSerializerMixin, ModelSerializer):
+class CurrentOrgSerializer(ModelSerializer):
     class Meta:
-        model = Organization.admins.through
-        list_serializer_class = BulkListSerializer
-        fields = '__all__'
+        model = Organization
+        fields = ['id', 'name', 'is_default', 'is_root', 'is_system', 'comment']
 
 
-class OrgMembershipUserSerializer(OrgMembershipSerializerMixin, ModelSerializer):
-    class Meta:
-        model = Organization.users.through
-        list_serializer_class = BulkListSerializer
-        fields = '__all__'
+class CurrentOrgDefault:
+    requires_context = False
+
+    def __call__(self, *args):
+        return get_current_org()
+
+    def __repr__(self):
+        return '%s()' % self.__class__.__name__

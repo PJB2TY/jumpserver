@@ -1,0 +1,54 @@
+{% load i18n %}
+{% load static %}
+
+
+<div class="report-container">
+    <header class="header">
+        {% autoescape off %}
+            {{ logo }}
+        {% endautoescape %}
+    </header>
+
+    <div class="info-section">
+        <h2 class="info">
+            {% trans 'The following is a summary of account backup tasks, please review and handle them' %}
+        </h2>
+    </div>
+
+    <main class="main-section">
+        <div class="synopsis-section">
+            <div class="synopsis-item">
+                <div class="synopsis-item-content">
+                    <p>
+                        <span class="item-label">{% trans 'Task name' %}</span>:
+                        <span>{{ execution.automation.name }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Date start' %}</span>:
+                        <span>{{ execution.date_start | date:"Y/m/d H:i:s" }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Date end' %}</span>:
+                        <span>{{ execution.date_finished | date:"Y/m/d H:i:s" }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Time using' %}</span>:
+                        <span>{{ execution.duration }}s</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Accounts amount' %}</span>:
+                        <span>{{ summary.total_accounts }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Type count' %}</span>:
+                        <span>{{ summary.total_types }}</span>
+                    </p>
+                </div>
+            </div>
+        </div>
+    </main>
+</div>
+
+<style>
+    {% include './css/report.css' %}
+</style>

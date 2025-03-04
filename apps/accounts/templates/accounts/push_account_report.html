@@ -1,0 +1,128 @@
+{% load i18n %}
+{% load static %}
+
+<link rel="stylesheet" href="{% static 'css/bootstrap.min.css' %}">
+
+<div class="report-container">
+    <header class="header">
+        {% autoescape off %}
+            {{ logo }}
+        {% endautoescape %}
+    </header>
+
+    <div class="info-section">
+        <h2 class="info">
+            {% trans 'The following is a summary of account push tasks, please read and process' %}
+        </h2>
+    </div>
+
+    <main class="main-section">
+        <div class="synopsis-section">
+            <div class="synopsis-item">
+                <div class="synopsis-item-content">
+                    <p>
+                        <span class="item-label">{% trans 'Task name' %}</span>:
+                        <span>{{ execution.automation.name }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Date start' %}</span>:
+                        <span>{{ execution.date_start | date:"Y/m/d H:i:s" }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Date end' %}</span>:
+                        <span>{{ execution.date_finished | date:"Y/m/d H:i:s" }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Time using' %}</span>:
+                        <span>{{ execution.duration }}s</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Assets amount' %}</span>:
+                        <span>{{ summary.total_assets }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Asset success count' %}</span>:
+                        <span>{{ summary.ok_assets | default:0 }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Asset failed count' %}</span>:
+                        <span>{{ summary.fail_assets | default:0 }}</span>
+                    </p>
+                    <p>
+                        <span class="item-label">{% trans 'Asset not support count' %}</span>:
+                        <span>{{ summary.error_assets | default:0 }}</span>
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="tabel-section tabel-summery-section">
+            <div class="new-accounts result-section table-responsive">
+                <div class="section-header">
+                    <h3>
+                        {% trans 'Success accounts' %}:
+                        <span>{{ summary.ok_accounts | default:0 }}</span>
+                    </h3>
+                </div>
+                {% if summary.ok_accounts %}
+                    <table class="custom-table table-striped table-hover data-table">
+                        <thead>
+                        <tr>
+                            <th>{% trans 'No' %}</th>
+                            <th>{% trans 'Asset' %}</th>
+                            <th>{% trans 'Username' %}</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        {% for account in result.ok_accounts %}
+                            <tr>
+                                <td>{{ forloop.counter }}</td>
+                                <td>{{ account.asset }}</td>
+                                <td>{{ account.username }}</td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p class="no-data">{% trans 'No new accounts found' %}</p>
+                {% endif %}
+            </div>
+
+            <div class="lost-accounts result-section table-responsive">
+                <div class="section-header">
+                    <h3>
+                        {% trans 'Failed accounts' %}:
+                        <span>{{ summary.fail_accounts | default:0 }}</span>
+                    </h3>
+                </div>
+
+                {% if summary.fail_accounts %}
+                    <table class="custom-table table-hover data-table">
+                        <thead>
+                        <tr>
+                            <th>{% trans 'No' %}</th>
+                            <th>{% trans 'Asset' %}</th>
+                            <th>{% trans 'Username' %}</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        {% for account in result.fail_accounts %}
+                            <tr>
+                                <td>{{ forloop.counter }}</td>
+                                <td>{{ account.asset }}</td>
+                                <td>{{ account.username }}</td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p class="no-data">{% trans 'No new accounts found' %}</p>
+                {% endif %}
+            </div>
+        </div>
+    </main>
+</div>
+
+<style>
+    {% include './css/report.css' %}
+</style>

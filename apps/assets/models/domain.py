@@ -1,59 +1,57 @@
 # -*- coding: utf-8 -*-
 #
-
-import uuid
 import random
 
 from django.db import models
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-from orgs.mixins import OrgModelMixin
-from .base import AssetUser
+from common.utils import get_logger, lazyproperty
+from labels.mixins import LabeledMixin
+from orgs.mixins.models import JMSOrgBaseModel
+from .gateway import Gateway
 
-__all__ = ['Domain', 'Gateway']
+logger = get_logger(__file__)
+
+__all__ = ['Domain']
 
 
-class Domain(OrgModelMixin):
-    id = models.UUIDField(default=uuid.uuid4, primary_key=True)
-    name = models.CharField(max_length=128, unique=True, verbose_name=_('Name'))
-    comment = models.TextField(blank=True, verbose_name=_('Comment'))
-    date_created = models.DateTimeField(auto_now_add=True, null=True,
-                                        verbose_name=_('Date created'))
+class Domain(LabeledMixin, JMSOrgBaseModel):
+    name = models.CharField(max_length=128, verbose_name=_('Name'))
 
     class Meta:
-        verbose_name = _("Domain")
+        verbose_name = _("Zone")
+        unique_together = [('org_id', 'name')]
+        ordering = ('name',)
 
     def __str__(self):
         return self.name
 
-    def has_gateway(self):
-        return self.gateway_set.filter(is_active=True).exists()
+    def select_gateway(self):
+        return self.random_gateway()
+
+    @lazyproperty
+    def assets_amount(self):
+        return self.assets.gateways(0).count()
+
+    def random_gateway(self):
+        gateways = [gw for gw in self.active_gateways if gw.is_connective]
+
+        if not gateways:
+            gateways = self.active_gateways
+        if not gateways:
+            logger.warn(f'Not active gateway, domain={self}, pass')
+            return None
+        return random.choice(gateways)
+
+    @property
+    def active_gateways(self):
+        return self.gateways.filter(is_active=True)
 
     @property
     def gateways(self):
-        return self.gateway_set.filter(is_active=True)
+        queryset = self.get_gateway_queryset().filter(domain=self)
+        return queryset
 
-    def random_gateway(self):
-        return random.choice(self.gateways)
-
-
-class Gateway(AssetUser):
-    SSH_PROTOCOL = 'ssh'
-    RDP_PROTOCOL = 'rdp'
-    PROTOCOL_CHOICES = (
-        (SSH_PROTOCOL, 'ssh'),
-        (RDP_PROTOCOL, 'rdp'),
-    )
-    ip = models.GenericIPAddressField(max_length=32, verbose_name=_('IP'), db_index=True)
-    port = models.IntegerField(default=22, verbose_name=_('Port'))
-    protocol = models.CharField(choices=PROTOCOL_CHOICES, max_length=16, default=SSH_PROTOCOL, verbose_name=_("Protocol"))
-    domain = models.ForeignKey(Domain, on_delete=models.CASCADE, verbose_name=_("Domain"))
-    comment = models.CharField(max_length=128, blank=True, null=True, verbose_name=_("Comment"))
-    is_active = models.BooleanField(default=True, verbose_name=_("Is active"))
-
-    def __str__(self):
-        return self.name
-
-    class Meta:
-        unique_together = [('name', 'org_id')]
-        verbose_name = _("Gateway")
+    @classmethod
+    def get_gateway_queryset(cls):
+        return Gateway.objects.all()
